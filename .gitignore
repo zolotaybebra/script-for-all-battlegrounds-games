@@ -1,18 +1,752 @@
-# Build and Release Folders
-bin-debug/
-bin-release/
-[Oo]bj/
-[Bb]in/
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 
-# Other files and folders
-.settings/
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
 
-# Executables
-*.swf
-*.air
-*.ipa
-*.apk
+-- Настройки по умолчанию
+local LOCK_KEY = Enum.KeyCode.L
+local MAX_DISTANCE = 150
+local DRAG_THRESHOLD = 6
 
-# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
-# should NOT be excluded as they contain compiler settings and other important
-# information for Eclipse / Flash Builder.
+local target = nil
+local isLocked = false
+local menuOpen = false
+
+-- Полёт
+local flyEnabled = false
+local flySpeed = 80
+local flyBodyVelocity = nil
+local flyBodyGyro = nil
+
+-- Прыжки
+local infJumpEnabled = false
+local jumpPower = 70
+
+-- Скорость
+local speedEnabled = false
+local customSpeed = 50
+local defaultSpeed = 16
+
+------------------------------
+-- UI
+------------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "MainMenuGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+------------------------------
+-- Кнопка открытия
+------------------------------
+local menuToggleBtn = Instance.new("TextButton")
+menuToggleBtn.Size = UDim2.new(0, 50, 0, 50)
+menuToggleBtn.Position = UDim2.new(0, 20, 0.5, -25)
+menuToggleBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+menuToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+menuToggleBtn.Text = "☰"
+menuToggleBtn.TextSize = 24
+menuToggleBtn.Font = Enum.Font.GothamBold
+menuToggleBtn.AutoButtonColor = false
+menuToggleBtn.ZIndex = 10
+menuToggleBtn.Parent = screenGui
+
+Instance.new("UICorner", menuToggleBtn).CornerRadius = UDim.new(0, 12)
+local tglStroke = Instance.new("UIStroke", menuToggleBtn)
+tglStroke.Color = Color3.fromRGB(80, 80, 120)
+tglStroke.Thickness = 2
+
+------------------------------
+-- Панель меню
+------------------------------
+local menuFrame = Instance.new("Frame")
+menuFrame.Name = "MenuFrame"
+menuFrame.Size = UDim2.new(0, 300, 0, 550)
+menuFrame.Position = UDim2.new(0, 80, 0.5, -275)
+menuFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
+menuFrame.BorderSizePixel = 0
+menuFrame.Visible = false
+menuFrame.ZIndex = 5
+menuFrame.Parent = screenGui
+
+Instance.new("UICorner", menuFrame).CornerRadius = UDim.new(0, 16)
+local mStroke = Instance.new("UIStroke", menuFrame)
+mStroke.Color = Color3.fromRGB(70, 70, 110)
+mStroke.Thickness = 2
+
+-- Шапка
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 55)
+header.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+header.BorderSizePixel = 0
+header.ZIndex = 6
+header.Parent = menuFrame
+
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
+
+local headerFix = Instance.new("Frame")
+headerFix.Size = UDim2.new(1, 0, 0, 16)
+headerFix.Position = UDim2.new(0, 0, 1, -16)
+headerFix.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+headerFix.BorderSizePixel = 0
+headerFix.ZIndex = 6
+headerFix.Parent = header
+
+local headerTitle = Instance.new("TextLabel")
+headerTitle.Size = UDim2.new(1, -60, 1, 0)
+headerTitle.Position = UDim2.new(0, 16, 0, 0)
+headerTitle.BackgroundTransparency = 1
+headerTitle.Text = "⚙️ Меню"
+headerTitle.TextSize = 20
+headerTitle.Font = Enum.Font.GothamBold
+headerTitle.TextColor3 = Color3.fromRGB(230, 230, 255)
+headerTitle.TextXAlignment = Enum.TextXAlignment.Left
+headerTitle.ZIndex = 7
+headerTitle.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 36, 0, 36)
+closeBtn.Position = UDim2.new(1, -46, 0.5, -18)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+closeBtn.Text = "✕"
+closeBtn.TextSize = 18
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.AutoButtonColor = false
+closeBtn.ZIndex = 8
+closeBtn.Parent = header
+
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+
+-- Скролл
+local list = Instance.new("ScrollingFrame")
+list.Size = UDim2.new(1, -20, 1, -70)
+list.Position = UDim2.new(0, 10, 0, 62)
+list.BackgroundTransparency = 1
+list.ScrollBarThickness = 4
+list.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 160)
+list.BorderSizePixel = 0
+list.ZIndex = 6
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.Parent = menuFrame
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 8)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = list
+
+Instance.new("UIPadding", list).PaddingTop = UDim.new(0, 4)
+
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	list.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 12)
+end)
+
+------------------------------
+-- Утилиты создания UI
+------------------------------
+local orderIndex = 0
+local function nextOrder()
+	orderIndex += 1
+	return orderIndex
+end
+
+local function createSection(text)
+	local sec = Instance.new("TextLabel")
+	sec.Size = UDim2.new(1, 0, 0, 22)
+	sec.BackgroundTransparency = 1
+	sec.Text = "  " .. text
+	sec.TextSize = 13
+	sec.Font = Enum.Font.GothamBold
+	sec.TextColor3 = Color3.fromRGB(120, 120, 180)
+	sec.TextXAlignment = Enum.TextXAlignment.Left
+	sec.ZIndex = 7
+	sec.LayoutOrder = nextOrder()
+	sec.Parent = list
+end
+
+local function createToggle(labelText, iconText, hasSettings)
+	local container = Instance.new("Frame")
+	container.Size = UDim2.new(1, 0, 0, 55)
+	container.BackgroundTransparency = 1
+	container.ZIndex = 7
+	container.LayoutOrder = nextOrder()
+	container.ClipsDescendants = true
+	container.Parent = list
+
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, 0, 0, 55)
+	btn.BackgroundColor3 = Color3.fromRGB(28, 28, 42)
+	btn.AutoButtonColor = false
+	btn.Text = ""
+	btn.ZIndex = 7
+	btn.Parent = container
+
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
+
+	local btnStroke = Instance.new("UIStroke", btn)
+	btnStroke.Color = Color3.fromRGB(60, 60, 90)
+	btnStroke.Thickness = 1.5
+
+	local icon = Instance.new("TextLabel")
+	icon.Size = UDim2.new(0, 36, 0, 55)
+	icon.Position = UDim2.new(0, 10, 0, 0)
+	icon.BackgroundTransparency = 1
+	icon.Text = iconText
+	icon.TextSize = 20
+	icon.Font = Enum.Font.GothamBold
+	icon.TextColor3 = Color3.fromRGB(200, 200, 200)
+	icon.ZIndex = 8
+	icon.Parent = btn
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -140, 0, 55)
+	label.Position = UDim2.new(0, 50, 0, 0)
+	label.BackgroundTransparency = 1
+	label.Text = labelText
+	label.TextSize = 15
+	label.Font = Enum.Font.GothamBold
+	label.TextColor3 = Color3.fromRGB(220, 220, 220)
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.ZIndex = 8
+	label.Parent = btn
+
+	local status = Instance.new("TextLabel")
+	status.Size = UDim2.new(0, 48, 0, 24)
+	status.Position = UDim2.new(1, -100, 0.5, -12)
+	status.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+	status.Text = "ВЫКЛ"
+	status.TextSize = 12
+	status.Font = Enum.Font.GothamBold
+	status.TextColor3 = Color3.fromRGB(150, 150, 150)
+	status.ZIndex = 8
+	status.Parent = btn
+
+	Instance.new("UICorner", status).CornerRadius = UDim.new(0, 6)
+
+	local settingsBtn = nil
+	local settingsPanel = nil
+
+	if hasSettings then
+		settingsBtn = Instance.new("TextButton")
+		settingsBtn.Size = UDim2.new(0, 30, 0, 30)
+		settingsBtn.Position = UDim2.new(1, -42, 0.5, -15)
+		settingsBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
+		settingsBtn.Text = "⚙"
+		settingsBtn.TextSize = 16
+		settingsBtn.Font = Enum.Font.GothamBold
+		settingsBtn.TextColor3 = Color3.fromRGB(180, 180, 220)
+		settingsBtn.AutoButtonColor = false
+		settingsBtn.ZIndex = 9
+		settingsBtn.Parent = btn
+
+		Instance.new("UICorner", settingsBtn).CornerRadius = UDim.new(0, 8)
+
+		settingsPanel = Instance.new("Frame")
+		settingsPanel.Size = UDim2.new(1, -10, 0, 80)
+		settingsPanel.Position = UDim2.new(0, 5, 0, 60)
+		settingsPanel.BackgroundColor3 = Color3.fromRGB(22, 22, 36)
+		settingsPanel.BorderSizePixel = 0
+		settingsPanel.Visible = false
+		settingsPanel.ZIndex = 7
+		settingsPanel.Parent = container
+
+		Instance.new("UICorner", settingsPanel).CornerRadius = UDim.new(0, 8)
+		local sp = Instance.new("UIStroke", settingsPanel)
+		sp.Color = Color3.fromRGB(50, 50, 80)
+		sp.Thickness = 1
+
+		local settingsOpen = false
+		settingsBtn.MouseButton1Click:Connect(function()
+			settingsOpen = not settingsOpen
+			settingsPanel.Visible = settingsOpen
+			if settingsOpen then
+				container.Size = UDim2.new(1, 0, 0, 150)
+				settingsBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 140)
+			else
+				container.Size = UDim2.new(1, 0, 0, 55)
+				settingsBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
+			end
+		end)
+	end
+
+	return {
+		container = container,
+		btn = btn,
+		icon = icon,
+		label = label,
+		status = status,
+		btnStroke = btnStroke,
+		settingsBtn = settingsBtn,
+		settingsPanel = settingsPanel,
+	}
+end
+
+local function createSlider(parent, text, min, max, default, callback)
+	local sliderFrame = Instance.new("Frame")
+	sliderFrame.Size = UDim2.new(1, -16, 0, 34)
+	sliderFrame.Position = UDim2.new(0, 8, 0, 0)
+	sliderFrame.BackgroundTransparency = 1
+	sliderFrame.ZIndex = 8
+	sliderFrame.Parent = parent
+
+	local sLabel = Instance.new("TextLabel")
+	sLabel.Size = UDim2.new(0.45, 0, 1, 0)
+	sLabel.BackgroundTransparency = 1
+	sLabel.Text = text
+	sLabel.TextSize = 13
+	sLabel.Font = Enum.Font.GothamBold
+	sLabel.TextColor3 = Color3.fromRGB(170, 170, 200)
+	sLabel.TextXAlignment = Enum.TextXAlignment.Left
+	sLabel.ZIndex = 9
+	sLabel.Parent = sliderFrame
+
+	local valueLabel = Instance.new("TextLabel")
+	valueLabel.Size = UDim2.new(0, 40, 0, 20)
+	valueLabel.Position = UDim2.new(1, -40, 0.5, -10)
+	valueLabel.BackgroundTransparency = 1
+	valueLabel.Text = tostring(default)
+	valueLabel.TextSize = 14
+	valueLabel.Font = Enum.Font.GothamBold
+	valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	valueLabel.ZIndex = 9
+	valueLabel.Parent = sliderFrame
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(0.4, 0, 0, 6)
+	track.Position = UDim2.new(0.45, 0, 0.5, -3)
+	track.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+	track.BorderSizePixel = 0
+	track.ZIndex = 9
+	track.Parent = sliderFrame
+
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(100, 80, 200)
+	fill.BorderSizePixel = 0
+	fill.ZIndex = 10
+	fill.Parent = track
+
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local knob = Instance.new("TextButton")
+	knob.Size = UDim2.new(0, 16, 0, 16)
+	knob.Position = UDim2.new((default - min) / (max - min), -8, 0.5, -8)
+	knob.BackgroundColor3 = Color3.fromRGB(140, 120, 255)
+	knob.Text = ""
+	knob.AutoButtonColor = false
+	knob.ZIndex = 11
+	knob.Parent = track
+
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+	local slideDragging = false
+
+	knob.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			slideDragging = true
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if slideDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local trackAbsPos = track.AbsolutePosition.X
+			local trackAbsSize = track.AbsoluteSize.X
+			local pct = math.clamp((input.Position.X - trackAbsPos) / trackAbsSize, 0, 1)
+			local value = math.floor(min + (max - min) * pct)
+
+			fill.Size = UDim2.new(pct, 0, 1, 0)
+			knob.Position = UDim2.new(pct, -8, 0.5, -8)
+			valueLabel.Text = tostring(value)
+			callback(value)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			slideDragging = false
+		end
+	end)
+end
+
+------------------------------
+-- СЕКЦИИ И КНОПКИ
+------------------------------
+createSection("БОЕВЫЕ ФУНКЦИИ")
+local lockUI = createToggle("Lock-On", "🔓", false)
+
+createSection("ПЕРЕДВИЖЕНИЕ")
+local flyUI = createToggle("Полёт", "🕊️", true)
+local jumpUI = createToggle("Беск. прыжки", "⬆️", true)
+local speedUI = createToggle("Скорость", "🏃", true)
+
+-- Слайдеры: Полёт
+local flyPanelLayout = Instance.new("UIListLayout", flyUI.settingsPanel)
+flyPanelLayout.Padding = UDim.new(0, 6)
+Instance.new("UIPadding", flyUI.settingsPanel).PaddingTop = UDim.new(0, 8)
+
+createSlider(flyUI.settingsPanel, "Скорость:", 10, 300, flySpeed, function(val)
+	flySpeed = val
+end)
+
+-- Слайдеры: Прыжки
+local jumpPanelLayout = Instance.new("UIListLayout", jumpUI.settingsPanel)
+jumpPanelLayout.Padding = UDim.new(0, 6)
+Instance.new("UIPadding", jumpUI.settingsPanel).PaddingTop = UDim.new(0, 8)
+
+createSlider(jumpUI.settingsPanel, "Высота:", 20, 300, jumpPower, function(val)
+	jumpPower = val
+end)
+
+-- Слайдеры: Скорость
+local speedPanelLayout = Instance.new("UIListLayout", speedUI.settingsPanel)
+speedPanelLayout.Padding = UDim.new(0, 6)
+Instance.new("UIPadding", speedUI.settingsPanel).PaddingTop = UDim.new(0, 8)
+
+createSlider(speedUI.settingsPanel, "Скорость:", 16, 500, customSpeed, function(val)
+	customSpeed = val
+	if speedEnabled then
+		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.WalkSpeed = customSpeed
+		end
+	end
+end)
+
+------------------------------
+-- Функция обновления UI
+------------------------------
+local function setToggleUI(ui, on)
+	if on then
+		ui.status.Text = "ВКЛ"
+		ui.status.BackgroundColor3 = Color3.fromRGB(170, 30, 30)
+		ui.status.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ui.btnStroke.Color = Color3.fromRGB(220, 60, 60)
+		ui.btn.BackgroundColor3 = Color3.fromRGB(35, 20, 20)
+	else
+		ui.status.Text = "ВЫКЛ"
+		ui.status.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+		ui.status.TextColor3 = Color3.fromRGB(150, 150, 150)
+		ui.btnStroke.Color = Color3.fromRGB(60, 60, 90)
+		ui.btn.BackgroundColor3 = Color3.fromRGB(28, 28, 42)
+	end
+end
+
+------------------------------
+-- LOCK-ON
+------------------------------
+local function getClosestTarget()
+	local closestRoot = nil
+	local shortestDist = MAX_DISTANCE
+	local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not myRoot then return nil end
+
+	for _, obj in pairs(workspace:GetDescendants()) do
+		if obj:IsA("Model") then
+			local root = obj:FindFirstChild("HumanoidRootPart")
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			if root and hum and hum.Health > 0 and obj ~= player.Character then
+				local dist = (myRoot.Position - root.Position).Magnitude
+				if dist < shortestDist then
+					shortestDist = dist
+					closestRoot = root
+				end
+			end
+		end
+	end
+	return closestRoot
+end
+
+local function resetLock()
+	isLocked = false
+	target = nil
+	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if hum then hum.AutoRotate = true end
+	lockUI.icon.Text = "🔓"
+	setToggleUI(lockUI, false)
+end
+
+local function toggleLock()
+	isLocked = not isLocked
+	if isLocked then
+		target = getClosestTarget()
+		if target then
+			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if hum then hum.AutoRotate = false end
+			lockUI.icon.Text = "🔒"
+		else
+			isLocked = false
+		end
+	else
+		resetLock()
+		return
+	end
+	setToggleUI(lockUI, isLocked)
+end
+
+lockUI.btn.MouseButton1Click:Connect(toggleLock)
+
+------------------------------
+-- ПОЛЁТ
+------------------------------
+local flyConnection = nil
+
+local function startFly()
+	local char = player.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not root or not hum then return end
+
+	if flyBodyVelocity then flyBodyVelocity:Destroy() end
+	if flyBodyGyro then flyBodyGyro:Destroy() end
+
+	hum.PlatformStand = true
+
+	flyBodyVelocity = Instance.new("BodyVelocity")
+	flyBodyVelocity.Velocity = Vector3.zero
+	flyBodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+	flyBodyVelocity.Parent = root
+
+	flyBodyGyro = Instance.new("BodyGyro")
+	flyBodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+	flyBodyGyro.P = 1000000
+	flyBodyGyro.D = 100
+	flyBodyGyro.Parent = root
+
+	flyConnection = RunService.RenderStepped:Connect(function()
+		if not flyEnabled or not root or not root.Parent then return end
+
+		flyBodyGyro.CFrame = camera.CFrame
+
+		local dir = Vector3.zero
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += camera.CFrame.LookVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= camera.CFrame.LookVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= camera.CFrame.RightVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += camera.CFrame.RightVector end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir -= Vector3.yAxis end
+
+		flyBodyVelocity.Velocity = if dir.Magnitude > 0 then dir.Unit * flySpeed else Vector3.zero
+	end)
+end
+
+local function stopFly()
+	if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
+	if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
+	if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
+
+	local char = player.Character
+	if char then
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then hum.PlatformStand = false end
+	end
+end
+
+local function toggleFly()
+	flyEnabled = not flyEnabled
+	if flyEnabled then
+		startFly()
+		flyUI.icon.Text = "✈️"
+	else
+		stopFly()
+		flyUI.icon.Text = "🕊️"
+	end
+	setToggleUI(flyUI, flyEnabled)
+end
+
+flyUI.btn.MouseButton1Click:Connect(toggleFly)
+
+------------------------------
+-- БЕСКОНЕЧНЫЕ ПРЫЖКИ
+------------------------------
+local jumpConnection = nil
+
+local function toggleInfJump()
+	infJumpEnabled = not infJumpEnabled
+	if infJumpEnabled then
+		jumpUI.icon.Text = "🚀"
+		jumpConnection = UserInputService.JumpRequest:Connect(function()
+			if not infJumpEnabled then return end
+			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 then
+				hum.JumpPower = jumpPower
+				hum:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+		end)
+	else
+		jumpUI.icon.Text = "⬆️"
+		if jumpConnection then jumpConnection:Disconnect(); jumpConnection = nil end
+		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if hum then hum.JumpPower = 50 end
+	end
+	setToggleUI(jumpUI, infJumpEnabled)
+end
+
+jumpUI.btn.MouseButton1Click:Connect(toggleInfJump)
+
+------------------------------
+-- СКОРОСТЬ
+------------------------------
+local speedLoop = nil
+
+local function toggleSpeed()
+	speedEnabled = not speedEnabled
+	if speedEnabled then
+		speedUI.icon.Text = "💨"
+
+		-- Применяем сразу
+		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if hum then hum.WalkSpeed = customSpeed end
+
+		-- Цикл чтобы скорость не сбрасывалась игрой
+		speedLoop = RunService.Heartbeat:Connect(function()
+			if not speedEnabled then return end
+			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				hum.WalkSpeed = customSpeed
+			end
+		end)
+	else
+		speedUI.icon.Text = "🏃"
+		if speedLoop then speedLoop:Disconnect(); speedLoop = nil end
+
+		-- Возвращаем стандартную скорость
+		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if hum then hum.WalkSpeed = defaultSpeed end
+	end
+	setToggleUI(speedUI, speedEnabled)
+end
+
+speedUI.btn.MouseButton1Click:Connect(toggleSpeed)
+
+------------------------------
+-- Меню: открытие / закрытие
+------------------------------
+local function openMenu()
+	menuOpen = true
+	menuFrame.Visible = true
+	menuFrame.Size = UDim2.new(0, 0, 0, 0)
+	menuFrame.Position = UDim2.new(0, 80, 0.5, 0)
+
+	TweenService:Create(menuFrame, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Size = UDim2.new(0, 300, 0, 550),
+		Position = UDim2.new(0, 80, 0.5, -275)
+	}):Play()
+end
+
+local function closeMenu()
+	menuOpen = false
+	local t = TweenService:Create(menuFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		Size = UDim2.new(0, 0, 0, 0),
+		Position = UDim2.new(0, 80, 0.5, 0)
+	})
+	t:Play()
+	t.Completed:Connect(function()
+		menuFrame.Visible = false
+	end)
+end
+
+menuToggleBtn.MouseButton1Click:Connect(function()
+	if menuOpen then closeMenu() else openMenu() end
+end)
+
+closeBtn.MouseButton1Click:Connect(closeMenu)
+
+------------------------------
+-- Перетаскивание меню
+------------------------------
+local dragging = false
+local dragStart, frameStart
+
+header.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = Vector2.new(input.Position.X, input.Position.Y)
+		frameStart = menuFrame.Position
+	end
+end)
+
+header.InputChanged:Connect(function(input)
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local delta = Vector2.new(input.Position.X, input.Position.Y) - dragStart
+		menuFrame.Position = UDim2.new(
+			frameStart.X.Scale, frameStart.X.Offset + delta.X,
+			frameStart.Y.Scale, frameStart.Y.Offset + delta.Y
+		)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
+	end
+end)
+
+------------------------------
+-- Клавиша L
+------------------------------
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == LOCK_KEY then toggleLock() end
+end)
+
+------------------------------
+-- Поворот персонажа (Lock-On)
+------------------------------
+RunService.RenderStepped:Connect(function()
+	if not isLocked or not target then return end
+	if camera.CameraType ~= Enum.CameraType.Custom then return end
+
+	local char = player.Character
+	if not char then return end
+	local myRoot = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not myRoot or not hum then return end
+
+	local state = hum:GetState()
+	if state == Enum.HumanoidStateType.Dead
+		or state == Enum.HumanoidStateType.Physics
+		or state == Enum.HumanoidStateType.Ragdoll
+		or state == Enum.HumanoidStateType.FallingDown then
+		return
+	end
+
+	if not target.Parent then resetLock() return end
+	local tHum = target.Parent:FindFirstChildOfClass("Humanoid")
+	if not tHum or tHum.Health <= 0 then resetLock() return end
+
+	local dist = (myRoot.Position - target.Position).Magnitude
+	if dist > MAX_DISTANCE then resetLock() return end
+
+	local myPos = myRoot.Position
+	local dir = Vector3.new(target.Position.X - myPos.X, 0, target.Position.Z - myPos.Z)
+	if dir.Magnitude < 1 then return end
+
+	local vel = myRoot.AssemblyLinearVelocity
+	myRoot.CFrame = CFrame.lookAt(myPos, myPos + dir.Unit)
+	myRoot.AssemblyLinearVelocity = vel
+end)
+
+------------------------------
+-- Сброс при смерти
+------------------------------
+player.CharacterAdded:Connect(function()
+	resetLock()
+	if flyEnabled then
+		flyEnabled = false
+		setToggleUI(flyUI, false)
+		flyUI.icon.Text = "🕊️"
+		stopFly()
+	end
+	-- Переприменяем скорость после респавна
+	if speedEnabled then
+		task.wait(0.5)
+		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if hum then hum.WalkSpeed = customSpeed end
+	end
+end)
