@@ -7,84 +7,159 @@ local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 local LOCK_KEY = Enum.KeyCode.L
+local DASH_KEY = Enum.KeyCode.Q
+local DASH_PAUSE_TIME = 0.4
+local MOVE_PAUSE_TIME = 0.5
 local MAX_DISTANCE = 150
-local DRAG_THRESHOLD = 6
+local ANTI_STUN_PAUSE = 2.0
 
-local target = nil
-local isLocked = false
-local menuOpen = false
+local MOVE_KEYS = {
+	Enum.KeyCode.E, Enum.KeyCode.R, Enum.KeyCode.T,
+	Enum.KeyCode.F, Enum.KeyCode.G, Enum.KeyCode.Z,
+	Enum.KeyCode.X, Enum.KeyCode.C, Enum.KeyCode.V,
+}
 
-local flyEnabled = false
-local flySpeed = 80
-local flyBodyVelocity = nil
-local flyBodyGyro = nil
-
-local infJumpEnabled = false
-local jumpPower = 70
-
-local speedEnabled = false
-local customSpeed = 50
-local defaultSpeed = 16
-
+local target, isLocked, lockPaused, menuOpen = nil, false, false, false
+local flyEnabled, flySpeed = false, 80
+local flyBodyVelocity, flyBodyGyro, flyConnection = nil, nil, nil
+local infJumpEnabled, jumpPower = false, 70
+local speedEnabled, customSpeed, defaultSpeed = false, 50, 16
 local savedJoints = {}
+local antiStunPaused = false
 
--- Минимальная высота над землёй (не даёт вдавить в пол)
-local MIN_FLY_HEIGHT = 5
+local COLORS = {
+	bg = Color3.fromRGB(10, 0, 0),
+	headerBg = Color3.fromRGB(30, 0, 0),
+	btnBg = Color3.fromRGB(20, 2, 2),
+	btnBgActive = Color3.fromRGB(60, 5, 5),
+	stroke = Color3.fromRGB(120, 0, 0),
+	strokeActive = Color3.fromRGB(255, 0, 0),
+	text = Color3.fromRGB(255, 60, 60),
+	textBright = Color3.fromRGB(255, 0, 0),
+	textDim = Color3.fromRGB(160, 40, 40),
+	section = Color3.fromRGB(220, 0, 0),
+	statusOff = Color3.fromRGB(50, 10, 10),
+	statusOffText = Color3.fromRGB(130, 40, 40),
+	statusOn = Color3.fromRGB(255, 0, 0),
+	sliderTrack = Color3.fromRGB(40, 5, 5),
+	sliderFill = Color3.fromRGB(255, 0, 0),
+	sliderKnob = Color3.fromRGB(255, 100, 100),
+}
+
+local orderIdx = 0
+local function nextOrder() orderIdx += 1 return orderIdx end
 
 ------------------------------
--- UI
+-- UI: ScreenGui
 ------------------------------
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MainMenuGui"
+screenGui.Name = "UnderplayerGui"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
+-- Кнопка открытия
 local menuToggleBtn = Instance.new("TextButton")
 menuToggleBtn.Size = UDim2.new(0, 50, 0, 50)
 menuToggleBtn.Position = UDim2.new(0, 20, 0.5, -25)
-menuToggleBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
-menuToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-menuToggleBtn.Text = "☰"
-menuToggleBtn.TextSize = 24
+menuToggleBtn.BackgroundColor3 = COLORS.bg
+menuToggleBtn.TextColor3 = COLORS.textBright
+menuToggleBtn.Text = "III"
+menuToggleBtn.TextSize = 18
 menuToggleBtn.Font = Enum.Font.GothamBold
-menuToggleBtn.AutoButtonColor = false
 menuToggleBtn.ZIndex = 10
 menuToggleBtn.Parent = screenGui
-
 Instance.new("UICorner", menuToggleBtn).CornerRadius = UDim.new(0, 12)
 local tglStroke = Instance.new("UIStroke", menuToggleBtn)
-tglStroke.Color = Color3.fromRGB(80, 80, 120)
+tglStroke.Color = COLORS.stroke
 tglStroke.Thickness = 2
 
+-- Основная панель
 local menuFrame = Instance.new("Frame")
 menuFrame.Name = "MenuFrame"
 menuFrame.Size = UDim2.new(0, 300, 0, 550)
 menuFrame.Position = UDim2.new(0, 80, 0.5, -275)
-menuFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
-menuFrame.BorderSizePixel = 0
+menuFrame.BackgroundColor3 = COLORS.bg
+menuFrame.BackgroundTransparency = 0.3
 menuFrame.Visible = false
 menuFrame.ZIndex = 5
 menuFrame.Parent = screenGui
-
 Instance.new("UICorner", menuFrame).CornerRadius = UDim.new(0, 16)
 local mStroke = Instance.new("UIStroke", menuFrame)
-mStroke.Color = Color3.fromRGB(70, 70, 110)
+mStroke.Color = COLORS.stroke
 mStroke.Thickness = 2
 
+------------------------------
+-- ФОН (создаётся ПОСЛЕ menuFrame)
+------------------------------
+local bgImage = Instance.new("ImageLabel")
+bgImage.Size = UDim2.new(1, 0, 1, 0)
+bgImage.BackgroundTransparency = 1
+bgImage.ImageTransparency = 0.15
+bgImage.ScaleType = Enum.ScaleType.Stretch
+bgImage.Size = UDim2.new(1, 0, 1, 0)
+bgImage.Position = UDim2.new(0, 0, 0, 0)
+bgImage.AnchorPoint = Vector2.new(0, 0)
+bgImage.ZIndex = 5
+bgImage.Parent = menuFrame -- menuFrame уже существует
+Instance.new("UICorner", bgImage).CornerRadius = UDim.new(0, 16)
+
+-- Загружаем картинку
+task.spawn(function()
+	local decalId = 107051278969038
+	local loaded = false
+
+	pcall(function()
+		local objs = game:GetObjects("rbxassetid://" .. decalId)
+		if objs and objs[1] then
+			local obj = objs[1]
+			if obj:IsA("Decal") then
+				bgImage.Image = obj.Texture
+				loaded = true
+			else
+				local d = obj:FindFirstChildOfClass("Decal")
+				if d then bgImage.Image = d.Texture loaded = true end
+			end
+			obj:Destroy()
+		end
+	end)
+
+	if not loaded then
+		pcall(function()
+			local model = game:GetService("InsertService"):LoadAsset(decalId)
+			for _, v in pairs(model:GetDescendants()) do
+				if v:IsA("Decal") then
+					bgImage.Image = v.Texture
+					loaded = true
+					break
+				end
+			end
+			model:Destroy()
+		end)
+	end
+
+	if not loaded then
+		bgImage.Image = "rbxassetid://" .. decalId
+	end
+end)
+
+------------------------------
+-- Шапка
+------------------------------
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 55)
-header.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
-header.BorderSizePixel = 0
+header.BackgroundColor3 = COLORS.headerBg
+header.BackgroundTransparency = 0.5
 header.ZIndex = 6
 header.Parent = menuFrame
-
 Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
 
+-- Фикс углов шапки
 local headerFix = Instance.new("Frame")
 headerFix.Size = UDim2.new(1, 0, 0, 16)
 headerFix.Position = UDim2.new(0, 0, 1, -16)
-headerFix.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
+headerFix.BackgroundColor3 = COLORS.headerBg
+headerFix.BackgroundTransparency = 0.5
 headerFix.BorderSizePixel = 0
 headerFix.ZIndex = 6
 headerFix.Parent = header
@@ -93,10 +168,10 @@ local headerTitle = Instance.new("TextLabel")
 headerTitle.Size = UDim2.new(1, -60, 1, 0)
 headerTitle.Position = UDim2.new(0, 16, 0, 0)
 headerTitle.BackgroundTransparency = 1
-headerTitle.Text = "⚙️ Меню"
-headerTitle.TextSize = 20
+headerTitle.Text = "UNDERPLAYER"
+headerTitle.TextSize = 22
 headerTitle.Font = Enum.Font.GothamBold
-headerTitle.TextColor3 = Color3.fromRGB(230, 230, 255)
+headerTitle.TextColor3 = COLORS.textBright
 headerTitle.TextXAlignment = Enum.TextXAlignment.Left
 headerTitle.ZIndex = 7
 headerTitle.Parent = header
@@ -104,33 +179,28 @@ headerTitle.Parent = header
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 36, 0, 36)
 closeBtn.Position = UDim2.new(1, -46, 0.5, -18)
-closeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-closeBtn.Text = "✕"
+closeBtn.BackgroundColor3 = COLORS.headerBg
+closeBtn.Text = "X"
 closeBtn.TextSize = 18
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.AutoButtonColor = false
+closeBtn.TextColor3 = COLORS.textBright
 closeBtn.ZIndex = 8
 closeBtn.Parent = header
-
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
+-- Список
 local list = Instance.new("ScrollingFrame")
 list.Size = UDim2.new(1, -20, 1, -70)
 list.Position = UDim2.new(0, 10, 0, 62)
 list.BackgroundTransparency = 1
-list.ScrollBarThickness = 4
-list.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 160)
-list.BorderSizePixel = 0
+list.ScrollBarThickness = 2
+list.ScrollBarImageColor3 = COLORS.stroke
 list.ZIndex = 6
-list.CanvasSize = UDim2.new(0, 0, 0, 0)
 list.Parent = menuFrame
 
-local listLayout = Instance.new("UIListLayout")
+local listLayout = Instance.new("UIListLayout", list)
 listLayout.Padding = UDim.new(0, 8)
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = list
-
 Instance.new("UIPadding", list).PaddingTop = UDim.new(0, 4)
 
 listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
@@ -138,31 +208,25 @@ listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 end)
 
 ------------------------------
--- Утилиты
+-- Функции UI
 ------------------------------
-local orderIndex = 0
-local function nextOrder()
-	orderIndex += 1
-	return orderIndex
-end
-
 local function createSection(text)
 	local sec = Instance.new("TextLabel")
-	sec.Size = UDim2.new(1, 0, 0, 22)
+	sec.Size = UDim2.new(1, 0, 0, 25)
 	sec.BackgroundTransparency = 1
 	sec.Text = "  " .. text
-	sec.TextSize = 13
+	sec.TextSize = 14
 	sec.Font = Enum.Font.GothamBold
-	sec.TextColor3 = Color3.fromRGB(120, 120, 180)
+	sec.TextColor3 = COLORS.section
 	sec.TextXAlignment = Enum.TextXAlignment.Left
 	sec.ZIndex = 7
 	sec.LayoutOrder = nextOrder()
 	sec.Parent = list
 end
 
-local function createToggle(labelText, iconText, hasSettings)
+local function createToggle(labelText, hasSettings)
 	local container = Instance.new("Frame")
-	container.Size = UDim2.new(1, 0, 0, 55)
+	container.Size = UDim2.new(1, 0, 0, 50)
 	container.BackgroundTransparency = 1
 	container.ZIndex = 7
 	container.LayoutOrder = nextOrder()
@@ -170,679 +234,185 @@ local function createToggle(labelText, iconText, hasSettings)
 	container.Parent = list
 
 	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(1, 0, 0, 55)
-	btn.BackgroundColor3 = Color3.fromRGB(28, 28, 42)
-	btn.AutoButtonColor = false
+	btn.Size = UDim2.new(1, 0, 0, 50)
+	btn.BackgroundColor3 = COLORS.btnBg
+	btn.BackgroundTransparency = 0.5
 	btn.Text = ""
 	btn.ZIndex = 7
 	btn.Parent = container
-
 	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
-	local btnStroke = Instance.new("UIStroke", btn)
-	btnStroke.Color = Color3.fromRGB(60, 60, 90)
-	btnStroke.Thickness = 1.5
-
-	local icon = Instance.new("TextLabel")
-	icon.Size = UDim2.new(0, 36, 0, 55)
-	icon.Position = UDim2.new(0, 10, 0, 0)
-	icon.BackgroundTransparency = 1
-	icon.Text = iconText
-	icon.TextSize = 20
-	icon.Font = Enum.Font.GothamBold
-	icon.TextColor3 = Color3.fromRGB(200, 200, 200)
-	icon.ZIndex = 8
-	icon.Parent = btn
+	local bs = Instance.new("UIStroke", btn)
+	bs.Color = COLORS.stroke
+	bs.Thickness = 1
 
 	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, -140, 0, 55)
-	label.Position = UDim2.new(0, 50, 0, 0)
+	label.Size = UDim2.new(1, -120, 1, 0)
+	label.Position = UDim2.new(0, 14, 0, 0)
 	label.BackgroundTransparency = 1
 	label.Text = labelText
 	label.TextSize = 15
 	label.Font = Enum.Font.GothamBold
-	label.TextColor3 = Color3.fromRGB(220, 220, 220)
+	label.TextColor3 = COLORS.text
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.ZIndex = 8
 	label.Parent = btn
 
 	local status = Instance.new("TextLabel")
-	status.Size = UDim2.new(0, 48, 0, 24)
-	status.Position = UDim2.new(1, -100, 0.5, -12)
-	status.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
-	status.Text = "ВЫКЛ"
-	status.TextSize = 12
+	status.Size = UDim2.new(0, 48, 0, 22)
+	status.Position = UDim2.new(1, -100, 0.5, -11)
+	status.BackgroundColor3 = COLORS.statusOff
+	status.Text = "OFF"
+	status.TextSize = 11
 	status.Font = Enum.Font.GothamBold
-	status.TextColor3 = Color3.fromRGB(150, 150, 150)
+	status.TextColor3 = COLORS.statusOffText
 	status.ZIndex = 8
 	status.Parent = btn
-
 	Instance.new("UICorner", status).CornerRadius = UDim.new(0, 6)
 
-	local settingsBtn = nil
-	local settingsPanel = nil
-
+	local settingsBtn, settingsPanel
 	if hasSettings then
 		settingsBtn = Instance.new("TextButton")
-		settingsBtn.Size = UDim2.new(0, 30, 0, 30)
-		settingsBtn.Position = UDim2.new(1, -42, 0.5, -15)
-		settingsBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
-		settingsBtn.Text = "⚙"
-		settingsBtn.TextSize = 16
-		settingsBtn.Font = Enum.Font.GothamBold
-		settingsBtn.TextColor3 = Color3.fromRGB(180, 180, 220)
-		settingsBtn.AutoButtonColor = false
+		settingsBtn.Size = UDim2.new(0, 28, 0, 28)
+		settingsBtn.Position = UDim2.new(1, -40, 0.5, -14)
+		settingsBtn.BackgroundColor3 = COLORS.bg
+		settingsBtn.Text = "..."
+		settingsBtn.TextColor3 = COLORS.textBright
 		settingsBtn.ZIndex = 9
 		settingsBtn.Parent = btn
-
 		Instance.new("UICorner", settingsBtn).CornerRadius = UDim.new(0, 8)
+		Instance.new("UIStroke", settingsBtn).Color = COLORS.stroke
 
 		settingsPanel = Instance.new("Frame")
 		settingsPanel.Size = UDim2.new(1, -10, 0, 80)
-		settingsPanel.Position = UDim2.new(0, 5, 0, 60)
-		settingsPanel.BackgroundColor3 = Color3.fromRGB(22, 22, 36)
-		settingsPanel.BorderSizePixel = 0
+		settingsPanel.Position = UDim2.new(0, 5, 0, 55)
+		settingsPanel.BackgroundColor3 = COLORS.bg
+		settingsPanel.BackgroundTransparency = 0.5
 		settingsPanel.Visible = false
 		settingsPanel.ZIndex = 7
 		settingsPanel.Parent = container
-
 		Instance.new("UICorner", settingsPanel).CornerRadius = UDim.new(0, 8)
-		local sp = Instance.new("UIStroke", settingsPanel)
-		sp.Color = Color3.fromRGB(50, 50, 80)
-		sp.Thickness = 1
+		Instance.new("UIStroke", settingsPanel).Color = COLORS.stroke
 
-		local settingsOpen = false
+		-- Добавляем UIListLayout для слайдеров
+		local panelLayout = Instance.new("UIListLayout", settingsPanel)
+		panelLayout.Padding = UDim.new(0, 4)
+		local panelPad = Instance.new("UIPadding", settingsPanel)
+		panelPad.PaddingTop = UDim.new(0, 6)
+
+		local open = false
 		settingsBtn.MouseButton1Click:Connect(function()
-			settingsOpen = not settingsOpen
-			settingsPanel.Visible = settingsOpen
-			if settingsOpen then
-				container.Size = UDim2.new(1, 0, 0, 150)
-				settingsBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 140)
-			else
-				container.Size = UDim2.new(1, 0, 0, 55)
-				settingsBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 65)
-			end
+			open = not open
+			settingsPanel.Visible = open
+			container.Size = open and UDim2.new(1, 0, 0, 145) or UDim2.new(1, 0, 0, 50)
 		end)
 	end
 
-	return {
-		container = container, btn = btn, icon = icon,
-		label = label, status = status, btnStroke = btnStroke,
-		settingsBtn = settingsBtn, settingsPanel = settingsPanel,
-	}
+	return {btn = btn, status = status, bs = bs, settingsPanel = settingsPanel}
 end
 
-local function createSlider(parent, text, min, max, default, callback)
-	local sliderFrame = Instance.new("Frame")
-	sliderFrame.Size = UDim2.new(1, -16, 0, 34)
-	sliderFrame.Position = UDim2.new(0, 8, 0, 0)
-	sliderFrame.BackgroundTransparency = 1
-	sliderFrame.ZIndex = 8
-	sliderFrame.Parent = parent
+local function createSlider(parent, text, minV, maxV, default, callback)
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(1, -16, 0, 34)
+	frame.BackgroundTransparency = 1
+	frame.Parent = parent
 
 	local sLabel = Instance.new("TextLabel")
-	sLabel.Size = UDim2.new(0.45, 0, 1, 0)
+	sLabel.Size = UDim2.new(0.4, 0, 1, 0)
+	sLabel.Position = UDim2.new(0, 8, 0, 0)
 	sLabel.BackgroundTransparency = 1
 	sLabel.Text = text
 	sLabel.TextSize = 13
 	sLabel.Font = Enum.Font.GothamBold
-	sLabel.TextColor3 = Color3.fromRGB(170, 170, 200)
+	sLabel.TextColor3 = COLORS.textDim
 	sLabel.TextXAlignment = Enum.TextXAlignment.Left
 	sLabel.ZIndex = 9
-	sLabel.Parent = sliderFrame
+	sLabel.Parent = frame
 
-	local valueLabel = Instance.new("TextLabel")
-	valueLabel.Size = UDim2.new(0, 40, 0, 20)
-	valueLabel.Position = UDim2.new(1, -40, 0.5, -10)
-	valueLabel.BackgroundTransparency = 1
-	valueLabel.Text = tostring(default)
-	valueLabel.TextSize = 14
-	valueLabel.Font = Enum.Font.GothamBold
-	valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	valueLabel.ZIndex = 9
-	valueLabel.Parent = sliderFrame
+	local valLabel = Instance.new("TextLabel")
+	valLabel.Size = UDim2.new(0, 40, 1, 0)
+	valLabel.Position = UDim2.new(1, -40, 0, 0)
+	valLabel.BackgroundTransparency = 1
+	valLabel.Text = tostring(default)
+	valLabel.TextColor3 = COLORS.textBright
+	valLabel.Font = Enum.Font.GothamBold
+	valLabel.TextSize = 13
+	valLabel.ZIndex = 9
+	valLabel.Parent = frame
 
 	local track = Instance.new("Frame")
-	track.Size = UDim2.new(0.4, 0, 0, 6)
-	track.Position = UDim2.new(0.45, 0, 0.5, -3)
-	track.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
-	track.BorderSizePixel = 0
+	track.Size = UDim2.new(0.4, 0, 0, 4)
+	track.Position = UDim2.new(0.45, 0, 0.5, -2)
+	track.BackgroundColor3 = COLORS.sliderTrack
 	track.ZIndex = 9
-	track.Parent = sliderFrame
-
+	track.Parent = frame
 	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
 	local fill = Instance.new("Frame")
-	fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
-	fill.BackgroundColor3 = Color3.fromRGB(100, 80, 200)
-	fill.BorderSizePixel = 0
+	fill.Size = UDim2.new((default - minV) / (maxV - minV), 0, 1, 0)
+	fill.BackgroundColor3 = COLORS.sliderFill
 	fill.ZIndex = 10
 	fill.Parent = track
-
 	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 
 	local knob = Instance.new("TextButton")
-	knob.Size = UDim2.new(0, 16, 0, 16)
-	knob.Position = UDim2.new((default - min) / (max - min), -8, 0.5, -8)
-	knob.BackgroundColor3 = Color3.fromRGB(140, 120, 255)
+	knob.Size = UDim2.new(0, 14, 0, 14)
+	knob.Position = UDim2.new((default - minV) / (maxV - minV), -7, 0.5, -7)
+	knob.BackgroundColor3 = COLORS.sliderKnob
 	knob.Text = ""
-	knob.AutoButtonColor = false
 	knob.ZIndex = 11
 	knob.Parent = track
-
 	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
-	local slideDragging = false
-	knob.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then slideDragging = true end
+	local sliding = false
+	knob.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 then sliding = true end
 	end)
-	UserInputService.InputChanged:Connect(function(input)
-		if slideDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-			local pct = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-			local value = math.floor(min + (max - min) * pct)
+	UserInputService.InputChanged:Connect(function(i)
+		if sliding and i.UserInputType == Enum.UserInputType.MouseMovement then
+			local pct = math.clamp((i.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+			local val = math.floor(minV + (maxV - minV) * pct)
 			fill.Size = UDim2.new(pct, 0, 1, 0)
-			knob.Position = UDim2.new(pct, -8, 0.5, -8)
-			valueLabel.Text = tostring(value)
-			callback(value)
+			knob.Position = UDim2.new(pct, -7, 0.5, -7)
+			valLabel.Text = tostring(val)
+			callback(val)
 		end
 	end)
-	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then slideDragging = false end
+	UserInputService.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 then sliding = false end
 	end)
 end
 
+local function setToggleUI(ui, on)
+	ui.status.Text = on and "ON" or "OFF"
+	ui.status.BackgroundColor3 = on and COLORS.statusOn or COLORS.statusOff
+	ui.status.TextColor3 = on and Color3.new(1, 1, 1) or COLORS.statusOffText
+	ui.bs.Color = on and COLORS.strokeActive or COLORS.stroke
+	ui.btn.BackgroundColor3 = on and COLORS.btnBgActive or COLORS.btnBg
+end
+
 ------------------------------
--- СЕКЦИИ
+-- Контент Меню
 ------------------------------
-createSection("БОЕВЫЕ ФУНКЦИИ")
-local lockUI = createToggle("Lock-On", "🔓", false)
+createSection("COMBAT")
+local lockUI = createToggle("Lock-On [L]", false)
 
-createSection("ПЕРЕДВИЖЕНИЕ")
-local flyUI = createToggle("Полёт", "🕊️", true)
-local jumpUI = createToggle("Беск. прыжки", "⬆️", true)
-local speedUI = createToggle("Скорость", "🏃", true)
+createSection("MOVEMENT")
+local flyUI = createToggle("Fly", true)
+local jumpUI = createToggle("Inf Jump", true)
+local speedUI = createToggle("Speed + Anti-Stun", true)
 
-local flyPanelLayout = Instance.new("UIListLayout", flyUI.settingsPanel)
-flyPanelLayout.Padding = UDim.new(0, 6)
-Instance.new("UIPadding", flyUI.settingsPanel).PaddingTop = UDim.new(0, 8)
-createSlider(flyUI.settingsPanel, "Скорость:", 10, 300, flySpeed, function(v) flySpeed = v end)
-
-local jumpPanelLayout = Instance.new("UIListLayout", jumpUI.settingsPanel)
-jumpPanelLayout.Padding = UDim.new(0, 6)
-Instance.new("UIPadding", jumpUI.settingsPanel).PaddingTop = UDim.new(0, 8)
-createSlider(jumpUI.settingsPanel, "Высота:", 20, 300, jumpPower, function(v) jumpPower = v end)
-
-local speedPanelLayout = Instance.new("UIListLayout", speedUI.settingsPanel)
-speedPanelLayout.Padding = UDim.new(0, 6)
-Instance.new("UIPadding", speedUI.settingsPanel).PaddingTop = UDim.new(0, 8)
-createSlider(speedUI.settingsPanel, "Скорость:", 16, 500, customSpeed, function(v)
+createSlider(flyUI.settingsPanel, "Speed:", 10, 300, flySpeed, function(v) flySpeed = v end)
+createSlider(jumpUI.settingsPanel, "Height:", 20, 300, jumpPower, function(v) jumpPower = v end)
+createSlider(speedUI.settingsPanel, "Speed:", 16, 500, customSpeed, function(v)
 	customSpeed = v
 	if speedEnabled then
-		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-		if hum then hum.WalkSpeed = customSpeed end
+		local h = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if h then h.WalkSpeed = v end
 	end
 end)
 
 ------------------------------
--- UI обновление
-------------------------------
-local function setToggleUI(ui, on)
-	if on then
-		ui.status.Text = "ВКЛ"
-		ui.status.BackgroundColor3 = Color3.fromRGB(170, 30, 30)
-		ui.status.TextColor3 = Color3.fromRGB(255, 255, 255)
-		ui.btnStroke.Color = Color3.fromRGB(220, 60, 60)
-		ui.btn.BackgroundColor3 = Color3.fromRGB(35, 20, 20)
-	else
-		ui.status.Text = "ВЫКЛ"
-		ui.status.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
-		ui.status.TextColor3 = Color3.fromRGB(150, 150, 150)
-		ui.btnStroke.Color = Color3.fromRGB(60, 60, 90)
-		ui.btn.BackgroundColor3 = Color3.fromRGB(28, 28, 42)
-	end
-end
-
-------------------------------
--- АНИМАЦИЯ
-------------------------------
-local function findJoint(parent, name)
-	if not parent then return nil end
-	for _, v in pairs(parent:GetDescendants()) do
-		if v:IsA("Motor6D") and v.Name == name then return v end
-	end
-	return nil
-end
-
-local function stopAllAnimations()
-	local char = player.Character
-	if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum then return end
-	local animator = hum:FindFirstChildOfClass("Animator")
-	if animator then
-		for _, track in pairs(animator:GetPlayingAnimationTracks()) do
-			track:Stop(0)
-		end
-	end
-end
-
-local function saveJointsFn()
-	local char = player.Character
-	if not char then return end
-	savedJoints = {}
-	local names = {
-		"RootJoint", "Neck",
-		"Right Shoulder", "Left Shoulder", "Right Hip", "Left Hip",
-		"Waist", "RightShoulder", "LeftShoulder", "RightHip", "LeftHip",
-		"RightElbow", "LeftElbow", "RightKnee", "LeftKnee",
-		"RightAnkle", "LeftAnkle", "RightWrist", "LeftWrist"
-	}
-	for _, name in pairs(names) do
-		local joint = findJoint(char, name)
-		if joint then
-			savedJoints[name] = {joint = joint, c0 = joint.C0, c1 = joint.C1}
-		end
-	end
-end
-
-local function restoreJoints()
-	for _, data in pairs(savedJoints) do
-		if data.joint and data.joint.Parent then
-			data.joint.C0 = data.c0
-			data.joint.C1 = data.c1
-		end
-	end
-	savedJoints = {}
-end
-
-local function applyLimbPose()
-	local char = player.Character
-	if not char then return end
-	local isR15 = char:FindFirstChild("UpperTorso") ~= nil
-
-	if isR15 then
-		local rS = findJoint(char, "RightShoulder")
-		local lS = findJoint(char, "LeftShoulder")
-		local rE = findJoint(char, "RightElbow")
-		local lE = findJoint(char, "LeftElbow")
-		local rH = findJoint(char, "RightHip")
-		local lH = findJoint(char, "LeftHip")
-		local rK = findJoint(char, "RightKnee")
-		local lK = findJoint(char, "LeftKnee")
-
-		if rS then rS.C0 = CFrame.new(1, 0.5, 0) * CFrame.Angles(math.rad(-170), 0, math.rad(10)) end
-		if lS then lS.C0 = CFrame.new(-1, 0.5, 0) * CFrame.Angles(math.rad(10), 0, math.rad(-5)) end
-		if rE then rE.C0 = CFrame.new(0, -0.5, 0) end
-		if lE then lE.C0 = CFrame.new(0, -0.5, 0) end
-		if rH then rH.C0 = CFrame.new(0.5, -0.5, 0) * CFrame.Angles(0, 0, math.rad(3)) end
-		if lH then lH.C0 = CFrame.new(-0.5, -0.5, 0) * CFrame.Angles(0, 0, math.rad(-3)) end
-		if rK then rK.C0 = CFrame.new(0, -0.45, 0) end
-		if lK then lK.C0 = CFrame.new(0, -0.45, 0) end
-	else
-		local rS = findJoint(char, "Right Shoulder")
-		local lS = findJoint(char, "Left Shoulder")
-		local rH = findJoint(char, "Right Hip")
-		local lH = findJoint(char, "Left Hip")
-
-		if rS then rS.C0 = CFrame.new(1, 0.5, 0) * CFrame.Angles(0, math.rad(90), math.rad(170)) end
-		if lS then lS.C0 = CFrame.new(-1, 0.5, 0) * CFrame.Angles(0, math.rad(-90), math.rad(10)) end
-		if rH then rH.C0 = CFrame.new(1, -1, 0) * CFrame.Angles(0, math.rad(90), math.rad(3)) end
-		if lH then lH.C0 = CFrame.new(-1, -1, 0) * CFrame.Angles(0, math.rad(-90), math.rad(-3)) end
-	end
-end
-
-------------------------------
--- Рейкаст для определения земли
-------------------------------
-local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Exclude
-
-local function getGroundDistance(root)
-	if not root then return math.huge end
-
-	-- Исключаем своего персонажа из рейкаста
-	local char = player.Character
-	if char then
-		rayParams.FilterDescendantsInstances = {char}
-	end
-
-	local result = workspace:Raycast(root.Position, Vector3.new(0, -500, 0), rayParams)
-	if result then
-		return (root.Position - result.Position).Magnitude
-	end
-	return math.huge
-end
-
-------------------------------
--- LOCK-ON
-------------------------------
-local function getClosestTarget()
-	local closestRoot = nil
-	local shortestDist = MAX_DISTANCE
-	local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-	if not myRoot then return nil end
-	for _, obj in pairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") then
-			local root = obj:FindFirstChild("HumanoidRootPart")
-			local hum = obj:FindFirstChildOfClass("Humanoid")
-			if root and hum and hum.Health > 0 and obj ~= player.Character then
-				local dist = (myRoot.Position - root.Position).Magnitude
-				if dist < shortestDist then
-					shortestDist = dist
-					closestRoot = root
-				end
-			end
-		end
-	end
-	return closestRoot
-end
-
-local function resetLock()
-	isLocked = false
-	target = nil
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if hum then hum.AutoRotate = true end
-	lockUI.icon.Text = "🔓"
-	setToggleUI(lockUI, false)
-end
-
-local function toggleLock()
-	isLocked = not isLocked
-	if isLocked then
-		target = getClosestTarget()
-		if target then
-			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-			if hum then hum.AutoRotate = false end
-			lockUI.icon.Text = "🔒"
-		else
-			isLocked = false
-		end
-	else
-		resetLock()
-		return
-	end
-	setToggleUI(lockUI, isLocked)
-end
-
-lockUI.btn.MouseButton1Click:Connect(toggleLock)
-
-------------------------------
--- ПОЛЁТ
-------------------------------
-local flyConnection = nil
-local lastFaceDir = Vector3.new(0, 0, -1)
-local currentGyro = CFrame.new()
-
-local function ensureFlyObjects()
-	local char = player.Character
-	if not char then return nil, nil end
-	local root = char:FindFirstChild("HumanoidRootPart")
-	if not root then return nil, nil end
-
-	if not flyBodyVelocity or not flyBodyVelocity.Parent then
-		local old = root:FindFirstChild("FlyVelocity")
-		if old then old:Destroy() end
-		flyBodyVelocity = Instance.new("BodyVelocity")
-		flyBodyVelocity.Name = "FlyVelocity"
-		flyBodyVelocity.Velocity = Vector3.zero
-		flyBodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-		flyBodyVelocity.Parent = root
-	end
-
-	if not flyBodyGyro or not flyBodyGyro.Parent then
-		local old = root:FindFirstChild("FlyGyro")
-		if old then old:Destroy() end
-		flyBodyGyro = Instance.new("BodyGyro")
-		flyBodyGyro.Name = "FlyGyro"
-		flyBodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-		flyBodyGyro.P = 400000
-		flyBodyGyro.D = 3000
-		flyBodyGyro.Parent = root
-	end
-
-	return flyBodyVelocity, flyBodyGyro
-end
-
-local function cleanFlyObjects()
-	if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
-	if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
-	local char = player.Character
-	if char then
-		local root = char:FindFirstChild("HumanoidRootPart")
-		if root then
-			for _, obj in pairs(root:GetChildren()) do
-				if obj.Name == "FlyVelocity" or obj.Name == "FlyGyro" then obj:Destroy() end
-			end
-		end
-	end
-end
-
-local function startFly()
-	local char = player.Character
-	if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	local root = char:FindFirstChild("HumanoidRootPart")
-	if not hum or not root then return end
-
-	cleanFlyObjects()
-	saveJointsFn()
-	stopAllAnimations()
-
-	local animate = char:FindFirstChild("Animate")
-	if animate then animate.Disabled = true end
-
-	-- Отключаем все стейты которые мешают
-	hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-	hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-	hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, false)
-	hum:SetStateEnabled(Enum.HumanoidStateType.Landed, false)
-	hum:SetStateEnabled(Enum.HumanoidStateType.Running, false)
-	hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
-	hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
-
-	hum.PlatformStand = true
-
-	applyLimbPose()
-
-	lastFaceDir = root.CFrame.LookVector
-	lastFaceDir = Vector3.new(lastFaceDir.X, 0, lastFaceDir.Z)
-	if lastFaceDir.Magnitude < 0.1 then lastFaceDir = Vector3.new(0, 0, -1) end
-	lastFaceDir = lastFaceDir.Unit
-
-	currentGyro = CFrame.lookAt(root.Position, root.Position + lastFaceDir)
-
-	-- Поднимаем персонажа чуть вверх при старте
-	root.CFrame = root.CFrame + Vector3.new(0, 3, 0)
-
-	flyConnection = RunService.RenderStepped:Connect(function()
-		if not flyEnabled then return end
-
-		local char = player.Character
-		if not char then return end
-		local root = char:FindFirstChild("HumanoidRootPart")
-		local hum = char:FindFirstChildOfClass("Humanoid")
-		if not root or not hum then return end
-
-		local bv, bg = ensureFlyObjects()
-		if not bv or not bg then return end
-
-		-- Принудительно держим состояние
-		hum.PlatformStand = true
-		stopAllAnimations()
-		applyLimbPose()
-
-		-- Ввод
-		local camLook = camera.CFrame.LookVector
-		local camRight = camera.CFrame.RightVector
-
-		local flatLook = Vector3.new(camLook.X, 0, camLook.Z)
-		if flatLook.Magnitude > 0.01 then flatLook = flatLook.Unit else flatLook = lastFaceDir end
-		local flatRight = Vector3.new(camRight.X, 0, camRight.Z)
-		if flatRight.Magnitude > 0.01 then flatRight = flatRight.Unit end
-
-		local horizontalDir = Vector3.zero
-		local verticalInput = 0
-
-		if UserInputService:IsKeyDown(Enum.KeyCode.W) then horizontalDir += flatLook end
-		if UserInputService:IsKeyDown(Enum.KeyCode.S) then horizontalDir -= flatLook end
-		if UserInputService:IsKeyDown(Enum.KeyCode.A) then horizontalDir -= flatRight end
-		if UserInputService:IsKeyDown(Enum.KeyCode.D) then horizontalDir += flatRight end
-		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then verticalInput = 1 end
-		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then verticalInput = -1 end
-
-		local hasHorizontal = horizontalDir.Magnitude > 0.01
-		local hasVertical = verticalInput ~= 0
-
-		if hasHorizontal then
-			horizontalDir = horizontalDir.Unit
-			lastFaceDir = horizontalDir
-		end
-
-		-- Рейкаст: проверяем расстояние до земли
-		local groundDist = getGroundDistance(root)
-		local canDescend = groundDist > MIN_FLY_HEIGHT
-
-		-- Если пытаемся лететь вниз но уже у земли — блокируем
-		if verticalInput < 0 and not canDescend then
-			verticalInput = 0
-		end
-
-		-- Финальная скорость
-		local finalVel = Vector3.zero
-		if hasHorizontal or hasVertical then
-			local hDir = if hasHorizontal then horizontalDir else Vector3.zero
-			finalVel = hDir + Vector3.new(0, verticalInput, 0)
-			if finalVel.Magnitude > 0 then
-				finalVel = finalVel.Unit * flySpeed
-			end
-		end
-
-		-- Если парим и близко к земле — держим высоту
-		if not hasHorizontal and not hasVertical and groundDist < MIN_FLY_HEIGHT then
-			finalVel = Vector3.new(0, 5, 0) -- мягко поднимаемся
-		end
-
-		bv.Velocity = finalVel
-
-		-- ПОВОРОТ: на основе lastFaceDir, без потери направления
-		local pos = root.Position
-		local targetCF = CFrame.lookAt(pos, pos + lastFaceDir)
-
-		-- Наклон тела
-		local tiltAngle = 0
-		if hasHorizontal and hasVertical then
-			tiltAngle = verticalInput * -25
-		elseif hasHorizontal then
-			tiltAngle = -20 -- наклон вперёд при полёте
-		elseif hasVertical then
-			tiltAngle = verticalInput * -40
-		end
-
-		targetCF = targetCF * CFrame.Angles(math.rad(tiltAngle), 0, 0)
-
-		-- Плавно но уверенно переходим (0.2 достаточно быстро чтобы видеть наклон)
-		currentGyro = currentGyro:Lerp(targetCF, 0.2)
-		bg.CFrame = currentGyro
-	end)
-end
-
-local function stopFly()
-	if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
-	cleanFlyObjects()
-	restoreJoints()
-
-	local char = player.Character
-	if char then
-		local animate = char:FindFirstChild("Animate")
-		if animate then animate.Disabled = false end
-		local hum = char:FindFirstChildOfClass("Humanoid")
-		if hum then
-			hum.PlatformStand = false
-
-			-- Возвращаем стейты
-			hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
-			hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
-			hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
-			hum:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
-			hum:SetStateEnabled(Enum.HumanoidStateType.Running, true)
-			hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
-			hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-
-			hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-		end
-	end
-end
-
-local function toggleFly()
-	flyEnabled = not flyEnabled
-	if flyEnabled then
-		startFly()
-		flyUI.icon.Text = "✈️"
-	else
-		stopFly()
-		flyUI.icon.Text = "🕊️"
-	end
-	setToggleUI(flyUI, flyEnabled)
-end
-
-flyUI.btn.MouseButton1Click:Connect(toggleFly)
-
-------------------------------
--- БЕСКОНЕЧНЫЕ ПРЫЖКИ
-------------------------------
-local jumpConnection = nil
-
-local function toggleInfJump()
-	infJumpEnabled = not infJumpEnabled
-	if infJumpEnabled then
-		jumpUI.icon.Text = "🚀"
-		jumpConnection = UserInputService.JumpRequest:Connect(function()
-			if not infJumpEnabled then return end
-			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-			if hum and hum.Health > 0 then
-				hum.JumpPower = jumpPower
-				hum:ChangeState(Enum.HumanoidStateType.Jumping)
-			end
-		end)
-	else
-		jumpUI.icon.Text = "⬆️"
-		if jumpConnection then jumpConnection:Disconnect(); jumpConnection = nil end
-		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-		if hum then hum.JumpPower = 50 end
-	end
-	setToggleUI(jumpUI, infJumpEnabled)
-end
-
-jumpUI.btn.MouseButton1Click:Connect(toggleInfJump)
-
-------------------------------
--- СКОРОСТЬ
-------------------------------
-local speedLoop = nil
-
-local function toggleSpeed()
-	speedEnabled = not speedEnabled
-	if speedEnabled then
-		speedUI.icon.Text = "💨"
-		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-		if hum then hum.WalkSpeed = customSpeed end
-		speedLoop = RunService.Heartbeat:Connect(function()
-			if not speedEnabled then return end
-			local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-			if hum then hum.WalkSpeed = customSpeed end
-		end)
-	else
-		speedUI.icon.Text = "🏃"
-		if speedLoop then speedLoop:Disconnect(); speedLoop = nil end
-		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-		if hum then hum.WalkSpeed = defaultSpeed end
-	end
-	setToggleUI(speedUI, speedEnabled)
-end
-
-speedUI.btn.MouseButton1Click:Connect(toggleSpeed)
-
-------------------------------
--- Меню
+-- Меню: открытие/закрытие
 ------------------------------
 local function openMenu()
 	menuOpen = true
@@ -857,7 +427,7 @@ end
 
 local function closeMenu()
 	menuOpen = false
-	local t = TweenService:Create(menuFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+	local t = TweenService:Create(menuFrame, TweenInfo.new(0.2), {
 		Size = UDim2.new(0, 0, 0, 0),
 		Position = UDim2.new(0, 80, 0.5, 0)
 	})
@@ -873,72 +443,346 @@ closeBtn.MouseButton1Click:Connect(closeMenu)
 ------------------------------
 -- Перетаскивание
 ------------------------------
-local dragging = false
-local dragStart, frameStart
+local dragStart, startPos, dragging = nil, nil, false
 
-header.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+header.InputBegan:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 then
 		dragging = true
-		dragStart = Vector2.new(input.Position.X, input.Position.Y)
-		frameStart = menuFrame.Position
+		dragStart = i.Position
+		startPos = menuFrame.Position
 	end
 end)
-header.InputChanged:Connect(function(input)
-	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-		local delta = Vector2.new(input.Position.X, input.Position.Y) - dragStart
+UserInputService.InputChanged:Connect(function(i)
+	if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+		local delta = i.Position - dragStart
 		menuFrame.Position = UDim2.new(
-			frameStart.X.Scale, frameStart.X.Offset + delta.X,
-			frameStart.Y.Scale, frameStart.Y.Offset + delta.Y
+			startPos.X.Scale, startPos.X.Offset + delta.X,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y
 		)
 	end
 end)
-UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+UserInputService.InputEnded:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
 ------------------------------
--- Клавиша L
+-- Суставы
 ------------------------------
-UserInputService.InputBegan:Connect(function(input, gp)
-	if gp then return end
-	if input.KeyCode == LOCK_KEY then toggleLock() end
-end)
-
-------------------------------
--- Lock-On поворот
-------------------------------
-RunService.RenderStepped:Connect(function()
-	if not isLocked or not target then return end
-	if camera.CameraType ~= Enum.CameraType.Custom then return end
-
+local function saveJointsFn()
 	local char = player.Character
 	if not char then return end
-	local myRoot = char:FindFirstChild("HumanoidRootPart")
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not myRoot or not hum then return end
+	savedJoints = {}
+	for _, v in pairs(char:GetDescendants()) do
+		if v:IsA("Motor6D") then
+			savedJoints[#savedJoints + 1] = {j = v, c0 = v.C0}
+		end
+	end
+end
 
-	local state = hum:GetState()
-	if state == Enum.HumanoidStateType.Dead
-		or state == Enum.HumanoidStateType.Physics
-		or state == Enum.HumanoidStateType.Ragdoll
-		or state == Enum.HumanoidStateType.FallingDown then
+local function restoreJoints()
+	for _, d in pairs(savedJoints) do
+		if d.j and d.j.Parent then d.j.C0 = d.c0 end
+	end
+	savedJoints = {}
+end
+
+------------------------------
+-- Lock-On
+------------------------------
+local function getCenterPos()
+	local size = camera.ViewportSize
+	local ray = camera:ViewportPointToRay(size.X / 2, size.Y / 2)
+	local res = workspace:Raycast(ray.Origin, ray.Direction * 1000)
+	return res and res.Position or (ray.Origin + ray.Direction * 500)
+end
+
+local function rotateToCenter()
+	local char = player.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	local tp = getCenterPos()
+	local dir = Vector3.new(tp.X - root.Position.X, 0, tp.Z - root.Position.Z)
+	if dir.Magnitude < 1 then return end
+	local vel = root.AssemblyLinearVelocity
+	root.CFrame = CFrame.lookAt(root.Position, root.Position + dir.Unit)
+	root.AssemblyLinearVelocity = vel
+end
+
+local function getClosest()
+	local closest, dist = nil, MAX_DISTANCE
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	for _, v in pairs(workspace:GetDescendants()) do
+		if v:IsA("Model") and v ~= player.Character then
+			local hrp = v:FindFirstChild("HumanoidRootPart")
+			local hum = v:FindFirstChildOfClass("Humanoid")
+			if hrp and hum and hum.Health > 0 then
+				local d = (root.Position - hrp.Position).Magnitude
+				if d < dist then dist = d closest = hrp end
+			end
+		end
+	end
+	return closest
+end
+
+local function resetLock()
+	isLocked = false
+	target = nil
+	lockPaused = false
+	local h = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if h then h.AutoRotate = true end
+	setToggleUI(lockUI, false)
+end
+
+local function toggleLock()
+	isLocked = not isLocked
+	if isLocked then
+		target = getClosest()
+		if target then
+			local h = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if h then h.AutoRotate = false end
+		else
+			isLocked = false
+		end
+	else
+		resetLock()
 		return
 	end
+	setToggleUI(lockUI, isLocked)
+end
+
+lockUI.btn.MouseButton1Click:Connect(toggleLock)
+
+RunService.Heartbeat:Connect(function()
+	if not isLocked or not target or lockPaused then return end
+	local char = player.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
 
 	if not target.Parent then resetLock() return end
 	local tHum = target.Parent:FindFirstChildOfClass("Humanoid")
 	if not tHum or tHum.Health <= 0 then resetLock() return end
 
-	local dist = (myRoot.Position - target.Position).Magnitude
-	if dist > MAX_DISTANCE then resetLock() return end
+	local myP, tarP = root.Position, target.Position
+	local flatDist = Vector2.new(tarP.X - myP.X, tarP.Z - myP.Z).Magnitude
+	local fullDist = (myP - tarP).Magnitude
 
-	local myPos = myRoot.Position
-	local dir = Vector3.new(target.Position.X - myPos.X, 0, target.Position.Z - myPos.Z)
-	if dir.Magnitude < 1 then return end
+	if fullDist > MAX_DISTANCE then resetLock() return end
+	if flatDist < 2 then return end
+	if flatDist < 10 and math.abs(tarP.Y - myP.Y) > 4 then return end
+	if flatDist < 5 and math.abs(tarP.Y - myP.Y) > 2 then return end
 
-	local vel = myRoot.AssemblyLinearVelocity
-	myRoot.CFrame = CFrame.lookAt(myPos, myPos + dir.Unit)
-	myRoot.AssemblyLinearVelocity = vel
+	local vel = root.AssemblyLinearVelocity
+	local angVel = root.AssemblyAngularVelocity
+	root.CFrame = CFrame.lookAt(myP, Vector3.new(tarP.X, myP.Y, tarP.Z))
+	root.AssemblyLinearVelocity = vel
+	root.AssemblyAngularVelocity = angVel
+end)
+
+------------------------------
+-- Клавиши
+------------------------------
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+
+	if input.KeyCode == LOCK_KEY then
+		toggleLock()
+		return
+	end
+
+	for _, k in pairs(MOVE_KEYS) do
+		if input.KeyCode == k then
+			antiStunPaused = true
+			task.delay(ANTI_STUN_PAUSE, function() antiStunPaused = false end)
+			if isLocked then
+				rotateToCenter()
+				lockPaused = true
+				task.delay(MOVE_PAUSE_TIME, function() lockPaused = false end)
+			end
+			break
+		end
+	end
+
+	if input.KeyCode == DASH_KEY and isLocked then
+		lockPaused = true
+		task.delay(DASH_PAUSE_TIME, function() lockPaused = false end)
+	end
+end)
+
+------------------------------
+-- Полёт
+------------------------------
+local function applySuperman(char)
+	local isR15 = char:FindFirstChild("UpperTorso") ~= nil
+	for _, v in pairs(char:GetDescendants()) do
+		if v:IsA("Motor6D") then
+			if isR15 then
+				if v.Name == "RightShoulder" then
+					v.C0 = CFrame.new(1, 0.5, 0) * CFrame.Angles(math.rad(-170), 0, 0)
+				elseif v.Name == "LeftShoulder" then
+					v.C0 = CFrame.new(-1, 0.5, 0) * CFrame.Angles(math.rad(10), 0, 0)
+				end
+			else
+				if v.Name == "Right Shoulder" then
+					v.C0 = CFrame.new(1, 0.5, 0) * CFrame.Angles(0, math.rad(90), math.rad(170))
+				elseif v.Name == "Left Shoulder" then
+					v.C0 = CFrame.new(-1, 0.5, 0) * CFrame.Angles(0, math.rad(-90), math.rad(10))
+				end
+			end
+		end
+	end
+end
+
+local function startFly()
+	local char = player.Character
+	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+	local root = char.HumanoidRootPart
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+
+	saveJointsFn()
+	hum.PlatformStand = true
+	if char:FindFirstChild("Animate") then char.Animate.Disabled = true end
+
+	if flyBodyVelocity then flyBodyVelocity:Destroy() end
+	if flyBodyGyro then flyBodyGyro:Destroy() end
+
+	flyBodyVelocity = Instance.new("BodyVelocity", root)
+	flyBodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+	flyBodyVelocity.Velocity = Vector3.zero
+
+	flyBodyGyro = Instance.new("BodyGyro", root)
+	flyBodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+	flyBodyGyro.D = 1500
+	flyBodyGyro.P = 300000
+
+	flyConnection = RunService.RenderStepped:Connect(function()
+		if not flyEnabled then return end
+		local char2 = player.Character
+		if not char2 then return end
+		applySuperman(char2)
+
+		local dir = Vector3.zero
+		local cl = camera.CFrame.LookVector
+		local cr = camera.CFrame.RightVector
+		local fl = Vector3.new(cl.X, 0, cl.Z)
+		if fl.Magnitude > 0.01 then fl = fl.Unit end
+		local fr = Vector3.new(cr.X, 0, cr.Z)
+		if fr.Magnitude > 0.01 then fr = fr.Unit end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += fl end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= fl end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= fr end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += fr end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+			local root2 = char2:FindFirstChild("HumanoidRootPart")
+			if root2 then
+				local res = workspace:Raycast(root2.Position, Vector3.new(0, -500, 0))
+				local gd = res and (root2.Position - res.Position).Magnitude or math.huge
+				if gd > 5 then dir -= Vector3.yAxis end
+			end
+		end
+
+		flyBodyVelocity.Velocity = dir.Magnitude > 0 and dir.Unit * flySpeed or Vector3.zero
+
+		local tilt = 0
+		local hasH = Vector3.new(dir.X, 0, dir.Z).Magnitude > 0.01
+		if hasH and dir.Y ~= 0 then
+			tilt = dir.Y > 0 and -25 or 25
+		elseif hasH then
+			tilt = -20
+		end
+
+		local baseDir = Vector3.new(dir.X, 0, dir.Z)
+		if baseDir.Magnitude > 0.01 then
+			flyBodyGyro.CFrame = CFrame.lookAt(Vector3.zero, baseDir.Unit) * CFrame.Angles(math.rad(tilt), 0, 0)
+		end
+	end)
+end
+
+local function stopFly()
+	if flyConnection then flyConnection:Disconnect() flyConnection = nil end
+	if flyBodyVelocity then flyBodyVelocity:Destroy() flyBodyVelocity = nil end
+	if flyBodyGyro then flyBodyGyro:Destroy() flyBodyGyro = nil end
+	restoreJoints()
+	local char = player.Character
+	if char then
+		if char:FindFirstChild("Animate") then char.Animate.Disabled = false end
+		local h = char:FindFirstChildOfClass("Humanoid")
+		if h then
+			h.PlatformStand = false
+			h:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end
+	end
+end
+
+flyUI.btn.MouseButton1Click:Connect(function()
+	flyEnabled = not flyEnabled
+	if flyEnabled then startFly() else stopFly() end
+	setToggleUI(flyUI, flyEnabled)
+end)
+
+------------------------------
+-- Прыжки
+------------------------------
+jumpUI.btn.MouseButton1Click:Connect(function()
+	infJumpEnabled = not infJumpEnabled
+	setToggleUI(jumpUI, infJumpEnabled)
+end)
+
+UserInputService.JumpRequest:Connect(function()
+	if not infJumpEnabled then return end
+	local h = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if h and h.Health > 0 then
+		h.JumpPower = jumpPower
+		h:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end)
+
+------------------------------
+-- Скорость + Анти-стан
+------------------------------
+speedUI.btn.MouseButton1Click:Connect(function()
+	speedEnabled = not speedEnabled
+	setToggleUI(speedUI, speedEnabled)
+	if not speedEnabled then
+		local h = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if h then h.WalkSpeed = defaultSpeed end
+	end
+end)
+
+RunService.Heartbeat:Connect(function()
+	if not speedEnabled then return end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+
+	hum.WalkSpeed = customSpeed
+
+	if antiStunPaused or flyEnabled then return end
+
+	if hum.PlatformStand then hum.PlatformStand = false end
+	if hum.Sit then hum.Sit = false end
+
+	local state = hum:GetState()
+	if state == Enum.HumanoidStateType.Ragdoll
+		or state == Enum.HumanoidStateType.FallingDown then
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if root then
+		if root.Anchored then root.Anchored = false end
+		for _, obj in pairs(root:GetChildren()) do
+			if obj.Name ~= "FlyVelocity" and obj.Name ~= "FlyGyro" then
+				if obj:IsA("BodyPosition") then obj:Destroy() end
+				if obj:IsA("BodyVelocity") and obj.Velocity.Magnitude < 0.1 then obj:Destroy() end
+			end
+		end
+	end
 end)
 
 ------------------------------
@@ -949,12 +793,11 @@ player.CharacterAdded:Connect(function()
 	if flyEnabled then
 		flyEnabled = false
 		setToggleUI(flyUI, false)
-		flyUI.icon.Text = "🕊️"
 		stopFly()
 	end
 	if speedEnabled then
 		task.wait(0.5)
-		local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-		if hum then hum.WalkSpeed = customSpeed end
+		local h = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if h then h.WalkSpeed = customSpeed end
 	end
 end)
